@@ -1,0 +1,374 @@
+openapi: "3.1.0"
+info:
+  title: User Authentication API
+  version: "1.0.0"
+  description: |
+    REST API for user registration, login, logout, password reset, and GDPR
+    account management. All protected endpoints require a valid Bearer JWT token.
+  contact:
+    name: Speckit Lab
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Registration, login, logout, and password reset
+  - name: Users
+    description: GDPR account data export and deletion
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # ── Request bodies ────────────────────────────────────────────────────────
+
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          example: alice@example.com
+        password:
+          type: string
+          minLength: 8
+          description: |
+            Must contain at least one uppercase letter, one lowercase letter,
+            and one digit.
+          example: "P@ssw0rd1"
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: alice@example.com
+        password:
+          type: string
+          example: "P@ssw0rd1"
+
+    PasswordResetRequestBody:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          example: alice@example.com
+
+    PasswordResetConfirmBody:
+      type: object
+      required: [token, newPassword]
+      properties:
+        token:
+          type: string
+          description: Raw reset token from the email link
+          example: "a1b2c3d4e5f6..."
+        newPassword:
+          type: string
+          minLength: 8
+          description: Must meet password strength requirements
+          example: "NewP@ss1"
+
+    # ── Response schemas ──────────────────────────────────────────────────────
+
+    AuthToken:
+      type: object
+      required: [token, expiresAt]
+      properties:
+        token:
+          type: string
+          description: Signed JWT (HS256)
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        expiresAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp when the token expires (24 h from issuance)
+          example: "2026-05-10T12:00:00.000Z"
+
+    UserProfile:
+      type: object
+      required: [id, email, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        email:
+          type: string
+          format: email
+          example: alice@example.com
+        createdAt:
+          type: string
+          format: date-time
+          example: "2026-05-09T10:00:00.000Z"
+
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          example: "Operation completed successfully"
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: "Invalid credentials"
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+          description: Field-level validation errors (only present on 422)
+
+paths:
+  # ── Authentication ────────────────────────────────────────────────────────
+
+  /auth/register:
+    post:
+      operationId: registerUser
+      tags: [Auth]
+      summary: Register a new user account
+      description: |
+        Creates a new user account. The account is immediately active (no email
+        verification required). Returns 409 if the email is already registered.
+        Password is hashed with bcrypt (cost 12) before storage.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: "Account created successfully"
+        "409":
+          description: Email address already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Email already in use"
+        "422":
+          description: Validation error (invalid email format or weak password)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      operationId: loginUser
+      tags: [Auth]
+      summary: Authenticate and receive a JWT token
+      description: |
+        Verifies email and password. Returns a signed JWT (HS256, 24 h expiry) on
+        success. Returns a generic error for any credential mismatch to prevent
+        enumeration. Temporarily blocks the account after 5 consecutive failures
+        within a 10-minute window (FR-011).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthToken"
+        "401":
+          description: Invalid credentials (email not found or password incorrect)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Invalid credentials"
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Too many failed login attempts; account temporarily locked
+          headers:
+            Retry-After:
+              description: Seconds until the lockout window expires
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Account temporarily locked. Try again later."
+
+  /auth/logout:
+    post:
+      operationId: logoutUser
+      tags: [Auth]
+      summary: Invalidate the current JWT token
+      description: |
+        Adds the token's `jti` to the server-side revoked-tokens denylist.
+        Subsequent requests with the same token will receive 401.
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Logged out successfully (no response body)
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/password-reset/request:
+    post:
+      operationId: requestPasswordReset
+      tags: [Auth]
+      summary: Request a password reset email
+      description: |
+        Sends a one-time reset link to the registered email address. Always
+        responds with 202 regardless of whether the email is recognised, to
+        prevent account enumeration (FR-016). Any previously issued reset links
+        for the same account are invalidated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequestBody"
+      responses:
+        "202":
+          description: |
+            Request accepted. If the email is registered, a reset link will be
+            sent within 5 minutes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: "If that email is registered, a reset link has been sent."
+        "422":
+          description: Validation error (invalid email format)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/password-reset/confirm:
+    post:
+      operationId: confirmPasswordReset
+      tags: [Auth]
+      summary: Set a new password using a reset token
+      description: |
+        Validates the reset token (must be unused, non-expired, and non-invalidated)
+        and updates the user's password. The token is immediately invalidated after
+        use. Returns the same 400 error for expired, used, or unknown tokens to
+        prevent enumeration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetConfirmBody"
+      responses:
+        "200":
+          description: Password updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: "Password updated successfully"
+        "400":
+          description: Token is invalid, expired, or already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Reset token is invalid or has expired"
+        "422":
+          description: Validation error (weak password)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── GDPR User Management ──────────────────────────────────────────────────
+
+  /users/me:
+    get:
+      operationId: getMyData
+      tags: [Users]
+      summary: Export personal data (GDPR right of access)
+      description: |
+        Returns all personal data held for the authenticated account. Satisfies
+        FR-019 (GDPR data portability).
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Personal data export
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteMyAccount
+      tags: [Users]
+      summary: Delete account and all personal data (GDPR right to erasure)
+      description: |
+        Soft-deletes the account immediately, invalidates all active tokens, and
+        schedules personal data scrubbing within 30 days. The account email is
+        replaced with a tombstone value synchronously. Satisfies FR-017.
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Account deletion initiated successfully (no response body)
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
