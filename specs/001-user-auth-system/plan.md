@@ -13,10 +13,10 @@ protection — all tested with **Jest + Supertest** following the Testing Pyrami
 
 ## Technical Context
 
-**Language/Version**: TypeScript 5.x (Node.js 20 LTS), `strict: true`  
+**Language/Version**: TypeScript 5.x (Node.js 20 LTS), `strict: true` (target ES2022, moduleResolution node16)  
 **Primary Dependencies**: Express 4.x, Prisma ORM, jsonwebtoken, bcrypt, Zod, nodemailer, express-rate-limit  
 **Storage**: PostgreSQL 16 (via Prisma Migrate for schema management)  
-**Testing**: Jest 29 + Supertest (unit + integration); 80% business-logic coverage gate  
+**Testing**: Jest 29 + ts-jest + Supertest across unit / integration / e2e layers; Stryker Mutator (`@stryker-mutator/core` + `@stryker-mutator/jest-runner`) for mutation testing. Quality gates: line coverage ≥ 80%, branch coverage ≥ 75%, mutation score ≥ 75%. Static analysis: `tsc --noEmit` zero errors + ESLint (`@typescript-eslint/recommended` + `eslint-plugin-jest`) with `--max-warnings 0`. TDD (RED-GREEN-REFACTOR) mandatory per TP-I.  
 **Target Platform**: Linux server (containerisable, Docker-friendly)  
 **Project Type**: Web service (REST API)  
 **Performance Goals**: Login ≤ 3 s p95 at 100 concurrent users; registration confirmation < 2 min  
@@ -31,11 +31,20 @@ protection — all tested with **Jest + Supertest** following the Testing Pyrami
 |-----------|--------|---------|
 | **I. Clean Code** | ✅ PASS | Modules split by domain (`auth`, `users`, `shared`); single-responsibility services; no speculative abstractions |
 | **II. TypeScript Strict Mode** | ✅ PASS | `tsconfig.json` will enable `strict: true`; `any` prohibited in business logic |
-| **III. JSDoc Documentation** | ✅ PASS | All exported services, middleware, and non-obvious helpers will carry JSDoc |
-| **IV. Testing Pyramid** | ✅ PASS | Many unit tests (services, validators, helpers); fewer Supertest integration tests; no dedicated e2e layer needed |
+| **III. JSDoc Documentation** | ✅ PASS | All exported services, middleware, and non-obvious helpers will carry JSDoc (purpose, params, returns, throws, side effects) |
+| **IV. Testing Pyramid** | ✅ PASS | Distribution targets ~70% unit / ~20% integration / ~10% e2e; critical-path e2e flows (registration → login → authenticated request → logout) under `tests/e2e/` via Supertest against the Express app instance |
 | **V. Incremental Simplicity** | ✅ PASS | Prisma for type-safe DB access; no unnecessary layers; complexity justified in research.md |
 
-**Business-Logic Coverage Gate**: Jest `--coverage` configured with `branches/lines/functions/statements` threshold at **80%**. Build fails below threshold.
+**Testing Principles Gate (TP-I … TP-VIII)**:
+
+- **TP-I (TDD)**: Every production change starts with a failing test derived from spec/acceptance scenarios. Tasks ordered tests-first.
+- **TP-II (Coverage & static analysis)**: Jest `--coverage` thresholds set to **lines ≥ 80%, branches ≥ 75%, functions ≥ 80%, statements ≥ 80%**. Stryker mutation score ≥ **75%**. `tsc --noEmit` and `eslint --max-warnings 0` MUST pass.
+- **TP-III (Layout)**: `tests/unit/**` mirrors `src/**` 1:1; `tests/integration/**` grouped by feature; `tests/e2e/**` grouped by user journey; fixtures under `tests/fixtures/`; shared helpers under `tests/helpers/`.
+- **TP-IV (Naming)**: `{module}.test.ts` (unit/integration), `{journey}.spec.ts` (e2e); `it('should <outcome> when <condition>', ...)`; max two `describe` nesting levels.
+- **TP-V (Anatomy)**: AAA structure with blank lines between phases; `clearMocks: true` in Jest config; `beforeAll` prohibited in unit tests.
+- **TP-VI (Doubles)**: Mock external services (nodemailer, third-party APIs); fake the Prisma layer in unit tests via a hand-rolled repository implementing the same interface; stub time via `jest.useFakeTimers()`. Do NOT mock owned services/utils, pure functions, Prisma types, or Zod schemas.
+- **TP-VII (Quality)**: No tautological assertions; oracles derived from spec; one behaviour per `it`; unit tests < 1 s, integration tests < 5 s; deterministic.
+- **TP-VIII (Tooling)**: Pre-commit hook via husky + lint-staged runs `tsc --noEmit` → `eslint --max-warnings 0` → `jest tests/unit --passWithNoTests`. CI pipeline runs `tsc --noEmit` → `eslint` → `npm test` → `jest --coverage` → `stryker run`; all five steps MUST pass before merge.
 
 ## Project Structure
 
@@ -92,20 +101,33 @@ prisma/
 └── migrations/               # Auto-generated migration files
 
 tests/
-├── unit/
-│   ├── auth/
-│   │   └── auth.service.test.ts
+├── unit/                              # mirrors src/ 1:1 (TP-III)
+│   ├── modules/
+│   │   ├── auth/
+│   │   │   └── auth.service.test.ts
+│   │   └── users/
+│   │       └── users.service.test.ts
 │   └── shared/
-│       ├── password.util.test.ts
-│       └── jwt.util.test.ts
-└── integration/
-    ├── auth/
-    │   ├── register.test.ts
-    │   ├── login.test.ts
-    │   ├── logout.test.ts
-    │   └── password-reset.test.ts
-    └── users/
-        └── gdpr.test.ts
+│       ├── password/
+│       │   └── password.util.test.ts
+│       └── token/
+│           └── jwt.util.test.ts
+├── integration/                       # grouped by feature (TP-III)
+│   ├── auth/
+│   │   ├── register.test.ts
+│   │   ├── login.test.ts
+│   │   ├── logout.test.ts
+│   │   └── password-reset.test.ts
+│   └── users/
+│       └── gdpr.test.ts
+├── e2e/                               # critical user journeys only (TP-II ~10%)
+│   └── auth-flow.spec.ts              # register → login → authenticated request → logout
+├── fixtures/                          # factory functions (TP-VI)
+│   ├── user.fixture.ts                # createTestUser(overrides?)
+│   ├── session.fixture.ts             # createTestSession(overrides?)
+│   └── email.fixture.ts               # setupMockEmailService()
+└── helpers/                           # shared test utilities (no business logic)
+    └── prisma-fake.ts                 # hand-rolled in-memory repository fake
 ```
 
 **Structure Decision**: Single-project layout (Option 1). The feature is a standalone API
@@ -123,3 +145,6 @@ No constitution violations requiring justification.
 | DB-backed token denylist (revoked_tokens table) | Keeps infrastructure simple (no Redis dependency for v1); rows auto-cleanup via scheduled query or cron |
 | Hash password-reset tokens before storage | Prevents token theft from DB read; mirrors standard practice (same as bcrypt for passwords) |
 | express-rate-limit with PostgreSQL store (`rate-limit-postgresql`) | Shared state across Node processes without Redis; acceptable latency at 100 concurrent users |
+| Hand-rolled Prisma repository fake for unit tests | TP-VI requires fakes (not mocks) for the DB layer in unit tests; keeps unit tests < 1 s and avoids coupling to Prisma internals |
+| Stryker Mutator added to CI | TP-II / TP-VII require mutation score ≥ 75% to validate test effectiveness beyond line/branch coverage |
+| Dedicated `tests/e2e/auth-flow.spec.ts` via Supertest | TP-II requires ~10% e2e coverage of critical user journeys; Supertest against the Express app instance avoids browser tooling for this REST-only API |

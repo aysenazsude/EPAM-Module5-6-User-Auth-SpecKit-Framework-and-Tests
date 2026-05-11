@@ -1,0 +1,24 @@
+# Node
+node_modules/
+dist/
+coverage/
+.stryker-tmp/
+reports/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Prisma
+prisma/*.db

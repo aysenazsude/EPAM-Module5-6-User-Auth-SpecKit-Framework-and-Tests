@@ -121,10 +121,17 @@ A user who cannot remember their password requests a reset link by providing the
 ### Engineering Constraints *(mandatory)*
 
 - **EC-001**: Implementation MUST follow clean code principles (single responsibility, expressive naming, and no unjustified duplication).
-- **EC-002**: TypeScript projects MUST compile with `strict: true` and MUST NOT merge undocumented `any` usage in business logic.
-- **EC-003**: All changed production code MUST include required JSDoc documentation for exported APIs and non-obvious behavior.
-- **EC-004**: Test design MUST follow the Testing Pyramid with unit tests as the primary layer, complemented by integration and selective end-to-end tests.
-- **EC-005**: Business-logic test coverage MUST be at least 80% before merge.
+- **EC-002**: TypeScript projects MUST compile with `strict: true` (`tsc --noEmit` reports zero errors) and MUST NOT merge undocumented `any` usage in business logic. ESLint with `@typescript-eslint/recommended` MUST pass with `--max-warnings 0`.
+- **EC-003**: All changed production code MUST include required JSDoc documentation for exported APIs and non-obvious behavior (purpose, parameters, return values, thrown errors, side effects).
+- **EC-004**: All production code MUST be developed using Test-Driven Development (RED-GREEN-REFACTOR per constitution TP-I). Tests MUST be derived from this specification's acceptance scenarios — never reverse-engineered from implementation. Test design MUST follow the Testing Pyramid distribution: ~70% unit, ~20% integration, ~10% E2E (critical paths only).
+- **EC-005**: Test quality gates enforced in CI before merge:
+  - Line coverage ≥ 80%, branch coverage ≥ 75% (Jest `--coverage`).
+  - Mutation score ≥ 75% (Stryker Mutator with `@stryker-mutator/jest-runner`).
+  - No tautological assertions; every expected value (oracle) derived from the spec.
+  - All tests MUST follow Arrange-Act-Assert structure, be independently runnable, deterministic, and isolated (`clearMocks: true` / `jest.clearAllMocks()` in `afterEach`).
+  - Unit tests complete in < 1 s each; integration tests in < 5 s each.
+- **EC-005a**: Test toolchain is fixed: **Jest 29** + **ts-jest** for unit and integration; **Supertest** for HTTP integration and E2E flows against an Express app instance. Test files MUST be organised under `tests/unit/`, `tests/integration/`, `tests/e2e/` mirroring the source tree, with naming `{module}.test.ts` (unit/integration) and `{journey}.spec.ts` (E2E). External services (email, third-party APIs) MUST be mocked; time MUST be controlled via `jest.useFakeTimers()`; fixture factories MUST live under `tests/fixtures/`.
+- **EC-005b**: Pre-commit hook (husky + lint-staged) MUST run `tsc --noEmit`, `eslint --max-warnings 0`, and `jest tests/unit` before every commit. CI pipeline MUST additionally run the full test suite, `jest --coverage`, and `stryker run`; all steps MUST pass before merge.
 - **EC-006**: JWT tokens MUST be signed using HMAC-SHA256 (HS256) with a symmetric secret. The secret MUST be supplied exclusively via an environment variable; it MUST NOT be hardcoded in source code or committed to version control. Key rotation is achieved by redeployment with a new secret value.
 
 ### Key Entities *(include if feature involves data)*

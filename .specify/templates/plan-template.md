@@ -39,8 +39,8 @@
   JSDoc annotations.
 - Testing Pyramid: Planned tests prioritize unit tests, then integration tests, with
   minimal critical-path end-to-end coverage.
-- Business Logic Coverage: Plan includes a measurable gate to keep business-logic
-  coverage >= 80% before merge.
+- Business Logic Coverage: Plan includes measurable gates to keep line coverage >= 80%,
+  branch coverage >= 75%, and mutation score >= 75% before merge (see TP-II, TP-VIII).
 
 ## Project Structure
 
